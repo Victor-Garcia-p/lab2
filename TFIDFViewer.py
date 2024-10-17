@@ -19,6 +19,7 @@ from elasticsearch_dsl.query import Q
 import argparse
 
 import numpy as np
+from numpy import linalg as LA
 
 __author__ = "bejar"
 
@@ -54,10 +55,7 @@ def document_term_vector(client, index, id):
     The first one is the frequency of the term in the document, the second one is the number of documents
     that contain the term
 
-    :param client:
-    :param index:
-    :param id:
-    :return:
+    output: [term, frequency in the document] and [term, frequency in all the index]
     """
     termvector = client.termvectors(
         index=index, id=id, fields=["text"], positions=False, term_statistics=True
@@ -73,94 +71,93 @@ def document_term_vector(client, index, id):
     return sorted(file_td.items()), sorted(file_df.items())
 
 
+def doc_count(client, index):
+    """
+    Returns the number of documents in an index
+    """
+    return int(client.cat.count(index=[index], format="json")[0]["count"])
+
+
+def normalize(tw):
+    """
+    compute the norm of the vector (square root of the
+    sums of components squared) and divide the whole vector by it, so that the resulting vector
+    has norm (length) 1.
+
+    Normalizes the weights in t so that they form a unit-length vector
+    It is assumed that not all weights are 0
+    """
+    weights = [weight for _, weight in tw]
+
+    min_weight = min(weights)
+    max_weight = max(weights)
+
+    normalized_tw = [
+        (
+            term,
+            (
+                (weight - min_weight) / (max_weight - min_weight)
+                if max_weight > min_weight
+                else 0
+            ),
+        )
+        for term, weight in tw
+    ]
+
+    return normalized_tw
+
+
 def toTFIDF(client, index, file_id):
     """
     Returns a list of pairs (term, weight) representing the
     document with the given docid. It:
     1. First gets two lists with term document frequency and term index frequency
     2. Gets the number of documents in the index.
-    3. Then finally creates every pair (term, TFIDF) entry of the vector to be returned.
-
+    3. Then finally creates every pair (term, TFIDF) entry of the vector to be returned
     """
 
-    # Get the frequency of the term in the document, and the number of documents
-    # that contain the term
+    # Get the frequency of all terms in the document and in the index (full corpus)
     file_tv, file_df = document_term_vector(client, index, file_id)
 
     max_freq = max([f for _, f in file_tv])
-
     dcount = doc_count(client, index)
 
     tfidfw = []
     for (t, w), (_, df) in zip(file_tv, file_df):
-        #
-        # Calculate tf-idf and fill the value
-        #
-        pass
+
+        term_frequency = w / max_freq
+        inverse_document_frequency = np.log2(dcount / df)
+        tf_weight = term_frequency * inverse_document_frequency
+
+        tfidfw.append((t, tf_weight))
 
     return normalize(tfidfw)
 
 
 def print_term_weigth_vector(twv):
     """
-    COMPLEATE
-
     prints one line for each entry in the given vector
     of the form (term, weight).
 
     Prints the term vector and the correspondig weights
-    :param twv:
-    :return:
     """
-    #
-    # Program something here
-    #
-    pass
-
-
-def normalize(tw):
-    """
-    COMPLEATE
-
-    compute the norm of the vector (square root of the
-    sums of components squared) and divide the whole vector by it, so that the resulting vector
-    has norm (length) 1. Complete this function.
-
-    Normalizes the weights in t so that they form a unit-length vector
-    It is assumed that not all weights are 0
-    :param tw:
-    :return:
-    """
-    #
-    # Program something here
-    #
-    return None
+    [print(t, w) for t, w in twv]
 
 
 def cosine_similarity(tw1, tw2):
     """
-    COMPLEATE
-
     Computes the cosine similarity between two weight vectors, terms are alphabetically ordered
-    :param tw1:
-    :param tw2:
-    :return:
     """
-    #
-    # Program something here
-    #
-    return 0
+    w1 = dict([(t, w) for t, w in tw1])
+    w2 = dict([(t, w) for t, w in tw2])
 
+    sum = 0
+    for t in set(w1).intersection(set(w2)):
+        sum += w1[t] * w2[t]
 
-def doc_count(client, index):
-    """
-    Returns the number of documents in an index
+    similarity = sum / (LA.norm(list(w1.values())) * LA.norm(list(w2.values())))
 
-    :param client:
-    :param index:
-    :return:
-    """
-    return int(client.cat.count(index=[index], format="json")[0]["count"])
+    return similarity
 
 
 if __name__ == "__main__":
@@ -193,10 +190,9 @@ if __name__ == "__main__":
         file1_id = search_file_by_path(client, index, file1)
         file2_id = search_file_by_path(client, index, file2)
 
-        print(file1_id, file2_id)
-
         # Compute the TF-IDF vectors
         file1_tw = toTFIDF(client, index, file1_id)
+
         file2_tw = toTFIDF(client, index, file2_id)
 
         if args.print:
@@ -207,9 +203,7 @@ if __name__ == "__main__":
             print_term_weigth_vector(file2_tw)
             print("---------------------")
 
-        """
         print(f"Similarity = {cosine_similarity(file1_tw, file2_tw):3.5f}")
-        """
 
     except NotFoundError:
         print(f"Index {index} does not exists")
